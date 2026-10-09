@@ -1,0 +1,403 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  active
+  disabled
+  locked
+}
+
+enum PermissionScope {
+  NONE
+  OWN_RECORD
+  ASSIGNED_SESSION
+  OWN_STAGE
+  ALL
+}
+
+enum OverrideEffect {
+  grant
+  deny
+}
+
+enum DeviceStatus {
+  active
+  revoked
+}
+
+model User {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  username           String    @unique @db.VarChar(64)
+  phone              String?   @unique @db.VarChar(20)
+  email              String?   @unique @db.VarChar(255)
+  passwordHash       String?   @map("password_hash")
+  authProvider       String    @default("local") @map("auth_provider") @db.VarChar(20)
+  status             UserStatus @default(active)
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  failedLoginCount   Int       @default(0) @map("failed_login_count")
+  lockedUntil        DateTime? @map("locked_until")
+  lastLoginAt        DateTime? @map("last_login_at")
+  tokenVersion       Int       @default(1) @map("token_version")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  roles           UserRole[]
+  permissions     UserPermission[]
+  sessions        Session[]
+  devices         Device[]
+  passwordResets  PasswordReset[]
+  child           Child?
+  servant         Servant?
+
+  @@index([status])
+  @@map("users")
+}
+
+model Role {
+  id          String  @id @default(uuid(7)) @db.Uuid
+  key         String  @unique @db.VarChar(64)
+  nameAr      String  @map("name_ar")
+  nameEn      String  @map("name_en")
+  description String?
+  isSystem    Boolean @default(false) @map("is_system")
+  status      String  @default("active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  permissions RolePermission[]
+  userRoles   UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  key           String   @unique @db.VarChar(64)
+  module        String
+  description   String?
+  allowedScopes PermissionScope[] @map("allowed_scopes")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  roles     RolePermission[]
+  overrides UserPermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String          @map("role_id") @db.Uuid
+  permissionId String          @map("permission_id") @db.Uuid
+  scope        PermissionScope @default(NONE)
+  constraints  Json?
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// stage_id: FK to stages is added in the Stages migration (Phase 3).
+model UserRole {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  roleId     String    @map("role_id") @db.Uuid
+  stageId    String?   @map("stage_id") @db.Uuid
+  validFrom  DateTime  @default(now()) @map("valid_from") @db.Date
+  validTo    DateTime? @map("valid_to") @db.Date
+  assignedBy String?   @map("assigned_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role  Role   @relation(fields: [roleId], references: [id])
+  stage Stage? @relation(fields: [stageId], references: [id])
+
+  @@index([userId, validTo])
+  @@index([roleId, stageId])
+  @@map("user_roles")
+}
+
+// =============================================================================
+// Phase 3: Stages, Classes, Children, Parents, Servants
+// =============================================================================
+
+enum RecordStatus {
+  active
+  inactive
+  archived
+}
+
+enum ParentRelationship {
+  father
+  mother
+  guardian
+  other
+}
+
+enum AssignmentStatus {
+  active
+  ended
+}
+
+model Stage {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  name        String       @unique @db.VarChar(100)
+  description String?
+  sortOrder   Int          @default(0) @map("sort_order")
+  status      RecordStatus @default(active)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  classes             Class[]
+  userRoles            UserRole[]
+  children             Child[]                   @relation("ChildCurrentStage")
+  enrollments          ChildEnrollment[]
+  servantAssignments   ServantStageAssignment[]
+
+  @@map("stages")
+}
+
+model Class {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  stageId     String       @map("stage_id") @db.Uuid
+  name        String       @db.VarChar(100)
+  description String?
+  status      RecordStatus @default(active)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  stage       Stage                    @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  children    Child[]                  @relation("ChildCurrentClass")
+  enrollments ChildEnrollment[]
+  assignments ServantStageAssignment[]
+
+  @@unique([stageId, name])
+  @@map("classes")
+}
+
+model Child {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  userId           String?      @unique @map("user_id") @db.Uuid
+  firstName        String       @map("first_name") @db.VarChar(100)
+  middleName       String?      @map("middle_name") @db.VarChar(100)
+  lastName         String       @map("last_name") @db.VarChar(100)
+  fullName         String       @map("full_name") @db.VarChar(300)
+  photoFileId      String?      @map("photo_file_id") @db.Uuid
+  mobile           String?      @db.VarChar(20)
+  whatsapp         String?      @db.VarChar(20)
+  fatherPhone      String?      @map("father_phone") @db.VarChar(20)
+  motherPhone      String?      @map("mother_phone") @db.VarChar(20)
+  dateOfBirth      DateTime?    @map("date_of_birth") @db.Date
+  address          String?
+  currentStageId   String       @map("current_stage_id") @db.Uuid
+  currentClassId   String?      @map("current_class_id") @db.Uuid
+  status           RecordStatus @default(active)
+  enrollmentDate   DateTime     @default(now()) @map("enrollment_date") @db.Date
+  notes            String?
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  user           User?             @relation(fields: [userId], references: [id])
+  currentStage   Stage             @relation("ChildCurrentStage", fields: [currentStageId], references: [id])
+  currentClass   Class?            @relation("ChildCurrentClass", fields: [currentClassId], references: [id])
+  enrollments    ChildEnrollment[]
+  parents        ChildParent[]
+
+  @@index([currentStageId, currentClassId, status])
+  @@index([mobile])
+  @@map("children")
+}
+
+/// History of stage/class membership. Exactly one row per child has endDate = null
+/// (enforced by a partial unique index — see prisma/manual/partial_unique_indexes.sql).
+model ChildEnrollment {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  childId   String    @map("child_id") @db.Uuid
+  stageId   String    @map("stage_id") @db.Uuid
+  classId   String?   @map("class_id") @db.Uuid
+  startDate DateTime  @default(now()) @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+  movedBy   String?   @map("moved_by") @db.Uuid
+  reason    String?
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  child Child  @relation(fields: [childId], references: [id], onDelete: Cascade)
+  stage Stage  @relation(fields: [stageId], references: [id])
+  class Class? @relation(fields: [classId], references: [id])
+
+  @@index([childId, endDate])
+  @@index([stageId, startDate])
+  @@map("child_enrollments")
+}
+
+model Parent {
+  id                  String             @id @default(uuid(7)) @db.Uuid
+  name                String             @db.VarChar(200)
+  phone               String?            @db.VarChar(20)
+  whatsapp            String?            @db.VarChar(20)
+  relationship        ParentRelationship @default(other)
+  notificationEnabled Boolean            @default(false) @map("notification_enabled")
+  status              RecordStatus       @default(active)
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+
+  children ChildParent[]
+
+  @@map("parents")
+}
+
+model ChildParent {
+  childId   String   @map("child_id") @db.Uuid
+  parentId  String   @map("parent_id") @db.Uuid
+  isPrimary Boolean  @default(false) @map("is_primary")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  child  Child  @relation(fields: [childId], references: [id], onDelete: Cascade)
+  parent Parent @relation(fields: [parentId], references: [id], onDelete: Cascade)
+
+  @@id([childId, parentId])
+  @@map("child_parents")
+}
+
+model Servant {
+  id                String       @id @default(uuid(7)) @db.Uuid
+  userId            String?      @unique @map("user_id") @db.Uuid
+  fullName          String       @map("full_name") @db.VarChar(200)
+  photoFileId       String?      @map("photo_file_id") @db.Uuid
+  mobile            String?      @db.VarChar(20)
+  whatsapp          String?      @db.VarChar(20)
+  dateOfBirth       DateTime?    @map("date_of_birth") @db.Date
+  status            RecordStatus @default(active)
+  serviceStartDate  DateTime?    @map("service_start_date") @db.Date
+  notes             String?
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  user        User?                    @relation(fields: [userId], references: [id])
+  assignments ServantStageAssignment[]
+
+  @@index([fullName])
+  @@map("servants")
+}
+
+model ServantStageAssignment {
+  id        String            @id @default(uuid(7)) @db.Uuid
+  servantId String            @map("servant_id") @db.Uuid
+  stageId   String            @map("stage_id") @db.Uuid
+  classId   String?           @map("class_id") @db.Uuid
+  roleTitle String?           @map("role_title") @db.VarChar(100)
+  startDate DateTime          @default(now()) @map("start_date") @db.Date
+  endDate   DateTime?         @map("end_date") @db.Date
+  status    AssignmentStatus  @default(active)
+  createdAt DateTime          @default(now()) @map("created_at")
+
+  servant Servant @relation(fields: [servantId], references: [id], onDelete: Cascade)
+  stage   Stage   @relation(fields: [stageId], references: [id])
+  class   Class?  @relation(fields: [classId], references: [id])
+
+  @@index([servantId, status])
+  @@index([stageId, status])
+  @@map("servant_stage_assignments")
+}
+
+
+model UserPermission {
+  id           String          @id @default(uuid(7)) @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
+  permissionId String          @map("permission_id") @db.Uuid
+  effect       OverrideEffect
+  scope        PermissionScope @default(ALL)
+  stageId      String?         @map("stage_id") @db.Uuid
+  expiresAt    DateTime?       @map("expires_at")
+  reason       String?
+  grantedBy    String?         @map("granted_by") @db.Uuid
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@index([userId])
+  @@map("user_permissions")
+}
+
+model Device {
+  id           String       @id @default(uuid(7)) @db.Uuid
+  userId       String       @map("user_id") @db.Uuid
+  fingerprint  String
+  deviceName   String?      @map("device_name")
+  os           String?
+  osVersion    String?      @map("os_version")
+  appVersion   String?      @map("app_version")
+  pushToken    String?      @map("push_token")
+  lastActiveAt DateTime     @default(now()) @map("last_active_at")
+  status       DeviceStatus @default(active)
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, fingerprint])
+  @@index([pushToken])
+  @@map("devices")
+}
+
+model Session {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  userId              String    @map("user_id") @db.Uuid
+  deviceId            String?   @map("device_id") @db.Uuid
+  refreshTokenHash    String    @unique @map("refresh_token_hash")
+  previousRefreshHash String?   @map("previous_refresh_hash")
+  issuedAt            DateTime  @default(now()) @map("issued_at")
+  expiresAt           DateTime  @map("expires_at")
+  lastUsedAt          DateTime  @default(now()) @map("last_used_at")
+  revokedAt           DateTime? @map("revoked_at")
+  revokedReason       String?   @map("revoked_reason")
+  ip                  String?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([previousRefreshHash])
+  @@map("sessions")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_resets")
+}
+
+// Append-only: see prisma/manual/audit_append_only.sql
+model AuditLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  entity    String?
+  entityId  String?  @map("entity_id")
+  oldValue  Json?    @map("old_value")
+  newValue  Json?    @map("new_value")
+  ip        String?
+  deviceId  String?  @map("device_id")
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([entity, entityId])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}

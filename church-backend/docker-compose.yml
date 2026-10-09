@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: church
+      POSTGRES_PASSWORD: church
+      POSTGRES_DB: church
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U church -d church"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Not used by the app yet (Phase 0-2 has no cache/queue), but wired up now
+  # since RBAC caching and notification jobs (Phase 2+/10) depend on it,
+  # and it is cheap to run locally from the start.
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+volumes:
+  pgdata:
